@@ -1,37 +1,15 @@
 const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2');
-const multer = require('multer');
-const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
-const cloudinary = require('cloudinary').v2;
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const JWT_SECRET = 'straywatch_secret_key_change_this_later';
-
-// Cloudinary config
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'your_cloud_name',
-  api_key: process.env.CLOUDINARY_API_KEY || 'your_api_key',
-  api_secret: process.env.CLOUDINARY_API_SECRET || 'your_api_secret'
-});
-
-// Cloudinary storage for multer
-const storage = new CloudinaryStorage({
-  cloudinary: cloudinary,
-  params: {
-    folder: 'straywatch',
-    allowed_formats: ['jpg', 'jpeg', 'png', 'webp']
-  }
-});
-
-const upload = multer({ storage: storage });
 
 // Database connection
 const db = mysql.createConnection({
@@ -65,7 +43,7 @@ const createTables = () => {
     dog_type VARCHAR(50) NOT NULL,
     location VARCHAR(255) NOT NULL,
     description TEXT,
-    image_url VARCHAR(500),
+    image_url VARCHAR(1000),
     status VARCHAR(50) DEFAULT 'Open',
     latitude DECIMAL(10, 8) NULL,
     longitude DECIMAL(11, 8) NULL,
@@ -122,7 +100,7 @@ app.get('/', (req, res) => {
   res.send('StrayWatch PH server is alive.');
 });
 
-// SIGNUP
+// SIGNUP (FIXED: was /reports, now /auth/signup)
 app.post('/auth/signup', async (req, res) => {
   const { email, password, role } = req.body;
 
@@ -181,19 +159,18 @@ app.post('/auth/login', (req, res) => {
   });
 });
 
-// POST - Create a report
-app.post('/reports', authenticate, upload.single('photo'), (req, res) => {
-  const { dogType, location, description, latitude, longitude } = req.body;
+// POST - Create a report (FIXED: no multer, accepts JSON with imageUrl)
+app.post('/reports', authenticate, (req, res) => {
+  const { dogType, location, description, latitude, longitude, imageUrl, force } = req.body;
   const userId = req.user.id;
-  const imageUrl = req.file ? req.file.path : null;
 
   function insertReport() {
     const sql = 'INSERT INTO reports (dog_type, location, description, image_url, latitude, longitude, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)';
-    const values = [dogType, location, description, imageUrl, latitude || null, longitude || null, userId];
+    const values = [dogType, location, description, imageUrl || null, latitude || null, longitude || null, userId];
 
     db.query(sql, values, (err, result) => {
       if (err) {
-        console.error(err);
+        console.error('Insert error:', err);
         return res.status(500).json({ error: 'Failed to save report.' });
       }
 
@@ -202,7 +179,7 @@ app.post('/reports', authenticate, upload.single('photo'), (req, res) => {
         dogType,
         location,
         description,
-        imageUrl,
+        imageUrl: imageUrl || null,
         latitude: latitude || null,
         longitude: longitude || null,
         status: 'Open',
@@ -212,6 +189,11 @@ app.post('/reports', authenticate, upload.single('photo'), (req, res) => {
 
       res.status(201).json(newReport);
     });
+  }
+
+  // Skip duplicate check if forced
+  if (force) {
+    return insertReport();
   }
 
   // Check for duplicates if coordinates provided
