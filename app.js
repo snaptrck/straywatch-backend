@@ -343,6 +343,47 @@ app.post('/reports', authenticate, upload.single('photo'), (req, res) => {
   }
 });
 
+// PATCH - Update report status (responders only)
+app.patch('/reports/:id', authenticate, (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+
+  if (req.user.role !== 'responder') {
+    return res.status(403).json({ error: 'Only responders can update reports.' });
+  }
+
+  db.query('UPDATE reports SET status = ? WHERE id = ?', [status, id], (err) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Failed to update report.' });
+    }
+    res.json({ message: 'Status updated', id, status });
+  });
+});
+
+// POST - Flag a report
+app.post('/reports/:id/flag', authenticate, (req, res) => {
+  const reportId = req.params.id;
+  const userId = req.user.id;
+
+  db.query('SELECT * FROM flags WHERE report_id = ? AND user_id = ?', [reportId, userId], (err, results) => {
+    if (err) return res.status(500).json({ error: 'Database error.' });
+    if (results.length > 0) return res.status(400).json({ error: 'You already flagged this report.' });
+
+    db.query('INSERT INTO flags (report_id, user_id) VALUES (?, ?)', [reportId, userId], (err) => {
+      if (err) return res.status(500).json({ error: 'Failed to flag report.' });
+
+      db.query('UPDATE reports SET flag_count = flag_count + 1 WHERE id = ?', [reportId], (err) => {
+        if (err) return res.status(500).json({ error: 'Failed to update flag count.' });
+        db.query('UPDATE reports SET is_flagged = TRUE WHERE id = ? AND flag_count >= 3', [reportId], (err) => {
+          if (err) return res.status(500).json({ error: 'Failed to hide report.' });
+          res.json({ message: 'Report flagged successfully.' });
+        });
+      });
+    });
+  });
+});
+
 app.listen(3000, () => {
   console.log('Server is running on http://localhost:3000');
 });
