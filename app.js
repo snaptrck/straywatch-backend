@@ -100,7 +100,7 @@ app.get('/', (req, res) => {
   res.send('StrayWatch PH server is alive.');
 });
 
-// SIGNUP (FIXED: was /reports, now /auth/signup)
+// SIGNUP
 app.post('/auth/signup', async (req, res) => {
   const { email, password, role } = req.body;
 
@@ -159,8 +159,9 @@ app.post('/auth/login', (req, res) => {
   });
 });
 
-// POST - Create a report (FIXED: no multer, accepts JSON with imageUrl)
+// POST - Create a report
 app.post('/reports', authenticate, (req, res) => {
+  console.log('DEBUG Body received:', req.body); // <-- DEBUG LINE ADDED
   const { dogType, location, description, latitude, longitude, imageUrl, force } = req.body;
   const userId = req.user.id;
 
@@ -191,12 +192,10 @@ app.post('/reports', authenticate, (req, res) => {
     });
   }
 
-  // Skip duplicate check if forced
   if (force) {
     return insertReport();
   }
 
-  // Check for duplicates if coordinates provided
   if (latitude && longitude) {
     db.query(
       'SELECT id, latitude, longitude FROM reports WHERE status = "Open" AND latitude IS NOT NULL AND longitude IS NOT NULL',
