@@ -5,27 +5,35 @@ const multer = require('multer');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const fs = require('fs');
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use('/uploads', express.static('uploads'));
 
 const JWT_SECRET = 'straywatch_secret_key_change_this_later';
 
-// Multer setup
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, 'uploads/'),
-  filename: (req, file, cb) => {
-    const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1000) + path.extname(file.originalname);
-    cb(null, uniqueName);
+// Cloudinary config
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'your_cloud_name',
+  api_key: process.env.CLOUDINARY_API_KEY || 'your_api_key',
+  api_secret: process.env.CLOUDINARY_API_SECRET || 'your_api_secret'
+});
+
+// Cloudinary storage for multer
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: 'straywatch',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'webp']
   }
 });
-const upload = multer({ storage });
+
+const upload = multer({ storage: storage });
 
 // Database connection
-const fs = require('fs');
-
 const db = mysql.createConnection({
   host: 'straywatch-straywatch.c.aivencloud.com',
   port: 12864,
@@ -42,7 +50,7 @@ db.connect((err) => {
   else console.log('Connected to MySQL database.');
 });
 
-// Auto-create tables (run once, then you can remove this)
+// Auto-create tables
 const createTables = () => {
   const userTable = `CREATE TABLE IF NOT EXISTS users (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -57,7 +65,7 @@ const createTables = () => {
     dog_type VARCHAR(50) NOT NULL,
     location VARCHAR(255) NOT NULL,
     description TEXT,
-    image_url VARCHAR(255),
+    image_url VARCHAR(500),
     status VARCHAR(50) DEFAULT 'Open',
     latitude DECIMAL(10, 8) NULL,
     longitude DECIMAL(11, 8) NULL,
@@ -95,6 +103,19 @@ const authenticate = (req, res, next) => {
     next();
   });
 };
+
+// Helper: distance between two coordinates in km
+function getDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
 
 // Front door
 app.get('/', (req, res) => {
@@ -160,129 +181,38 @@ app.post('/auth/login', (req, res) => {
   });
 });
 
-// POST - Create a report (requires login)
+// POST - Create a report
 app.post('/reports', authenticate, upload.single('photo'), (req, res) => {
   const { dogType, location, description, latitude, longitude } = req.body;
   const userId = req.user.id;
-  const imageUrl = req.file ? `/uploads/${req.file.filename}` : null;
+  const imageUrl = req.file ? req.file.path : null;
 
-  const sql = 'INSERT INTO reports (dog_type, location, description, image_url, latitude, longitude, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)';
-  const values = [dogType, location, description, imageUrl, latitude || null, longitude || null, userId];
+  function insertReport() {
+    const sql = 'INSERT INTO reports (dog_type, location, description, image_url, latitude, longitude, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)';
+    const values = [dogType, location, description, imageUrl, latitude || null, longitude || null, userId];
 
-  db.query(sql, values, (err, result) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json({ error: 'Failed to save report.' });
-    }
-
-    const newReport = {
-      id: result.insertId,
-      dogType,
-      location,
-      description,
-      imageUrl,
-      latitude: latitude || null,
-      longitude: longitude || null,
-      status: 'Open',
-      createdAt: new Date(),
-      userId
-    };
-
-    res.status(201).json(newReport);
-  });
-});
-
-// GET - All reports (hides flagged reports for non-responders)
-app.get('/reports', (req, res) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  let userRole = 'reporter';
-
-  if (token) {
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      userRole = decoded.role;
-    } catch (err) {
-      // Invalid token, treat as reporter
-    }
-  }
-
-  let sql = 'SELECT * FROM reports';
-  
-  // Reporters don't see flagged reports
-  if (userRole !== 'responder') {
-    sql += ' WHERE is_flagged = FALSE';
-  }
-  
-  sql += ' ORDER BY created_at DESC';
-
-  db.query(sql, (err, results) => {
-    if (err) return res.status(500).json({ error: 'Failed to fetch reports.' });
-
-    const reports = results.map(row => ({
-      id: row.id,
-      dogType: row.dog_type,
-      location: row.location,
-      description: row.description,
-      imageUrl: row.image_url,
-      status: row.status,
-      latitude: row.latitude,
-      longitude: row.longitude,
-      userId: row.user_id,
-      isFlagged: row.is_flagged,
-      flagCount: row.flag_count,
-      createdAt: row.created_at
-    }));
-
-    // Add duplicate info for each Open report
-    const openReports = reports.filter(r => r.status === 'Open' && r.latitude && r.longitude);
-    
-    const reportsWithDuplicates = reports.map(report => {
-      if (report.status !== 'Open' || !report.latitude || !report.longitude) {
-        return { ...report, hasDuplicates: false, duplicateCount: 0 };
+    db.query(sql, values, (err, result) => {
+      if (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Failed to save report.' });
       }
 
-      let duplicateCount = 0;
-      openReports.forEach(other => {
-        if (other.id !== report.id) {
-          const distance = getDistance(
-            report.latitude, report.longitude,
-            other.latitude, other.longitude
-          );
-          if (distance < 0.2) { // 200 meters
-            duplicateCount++;
-          }
-        }
-      });
-
-      return {
-        ...report,
-        hasDuplicates: duplicateCount > 0,
-        duplicateCount
+      const newReport = {
+        id: result.insertId,
+        dogType,
+        location,
+        description,
+        imageUrl,
+        latitude: latitude || null,
+        longitude: longitude || null,
+        status: 'Open',
+        createdAt: new Date(),
+        userId
       };
+
+      res.status(201).json(newReport);
     });
-
-    res.json(reportsWithDuplicates);
-  });
-});
-
-// Helper function to calculate distance between two coordinates in km
-function getDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
-// POST - Flag a report as inappropriate
-app.post('/reports', authenticate, upload.single('photo'), (req, res) => {
-  const { dogType, location, description, latitude, longitude } = req.body;
-  const userId = req.user.id;
-  const imageUrl = req.file ? `/uploads/${req.file.filename}` : null;
+  }
 
   // Check for duplicates if coordinates provided
   if (latitude && longitude) {
@@ -314,36 +244,70 @@ app.post('/reports', authenticate, upload.single('photo'), (req, res) => {
   } else {
     insertReport();
   }
-
-  function insertReport() {
-    const sql = 'INSERT INTO reports (dog_type, location, description, image_url, latitude, longitude, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)';
-    const values = [dogType, location, description, imageUrl, latitude || null, longitude || null, userId];
-
-    db.query(sql, values, (err, result) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: 'Failed to save report.' });
-      }
-
-      const newReport = {
-        id: result.insertId,
-        dogType,
-        location,
-        description,
-        imageUrl,
-        latitude: latitude || null,
-        longitude: longitude || null,
-        status: 'Open',
-        createdAt: new Date(),
-        userId
-      };
-
-      res.status(201).json(newReport);
-    });
-  }
 });
 
-// PATCH - Update report status (responders only)
+// GET - All reports
+app.get('/reports', (req, res) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  let userRole = 'reporter';
+
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      userRole = decoded.role;
+    } catch (err) {}
+  }
+
+  let sql = 'SELECT * FROM reports';
+  if (userRole !== 'responder') {
+    sql += ' WHERE is_flagged = FALSE';
+  }
+  sql += ' ORDER BY created_at DESC';
+
+  db.query(sql, (err, results) => {
+    if (err) return res.status(500).json({ error: 'Failed to fetch reports.' });
+
+    const reports = results.map(row => ({
+      id: row.id,
+      dogType: row.dog_type,
+      location: row.location,
+      description: row.description,
+      imageUrl: row.image_url,
+      status: row.status,
+      latitude: row.latitude,
+      longitude: row.longitude,
+      userId: row.user_id,
+      isFlagged: row.is_flagged,
+      flagCount: row.flag_count,
+      createdAt: row.created_at
+    }));
+
+    const openReports = reports.filter(r => r.status === 'Open' && r.latitude && r.longitude);
+    
+    const reportsWithDuplicates = reports.map(report => {
+      if (report.status !== 'Open' || !report.latitude || !report.longitude) {
+        return { ...report, hasDuplicates: false, duplicateCount: 0 };
+      }
+
+      let duplicateCount = 0;
+      openReports.forEach(other => {
+        if (other.id !== report.id) {
+          const distance = getDistance(
+            report.latitude, report.longitude,
+            other.latitude, other.longitude
+          );
+          if (distance < 0.2) duplicateCount++;
+        }
+      });
+
+      return { ...report, hasDuplicates: duplicateCount > 0, duplicateCount };
+    });
+
+    res.json(reportsWithDuplicates);
+  });
+});
+
+// PATCH - Update report status
 app.patch('/reports/:id', authenticate, (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
