@@ -165,14 +165,26 @@ app.post('/reports', authenticate, (req, res) => {
   const { dogType, location, description, latitude, longitude, imageUrl, force } = req.body;
   const userId = req.user.id;
 
-  function insertReport() {
+    function insertReport() {
+    console.log('DEBUG Inserting:', { dogType, location, description, imageUrl, latitude, longitude, userId });
+    
     const sql = 'INSERT INTO reports (dog_type, location, description, image_url, latitude, longitude, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)';
-    const values = [dogType, location, description, imageUrl || null, latitude || null, longitude || null, userId];
+    const values = [
+      dogType,
+      location,
+      description,
+      imageUrl || null,
+      latitude ? parseFloat(latitude) : null,
+      longitude ? parseFloat(longitude) : null,
+      userId
+    ];
+
+    console.log('DEBUG SQL values:', values);
 
     db.query(sql, values, (err, result) => {
       if (err) {
         console.error('Insert error:', err);
-        return res.status(500).json({ error: 'Failed to save report.' });
+        return res.status(500).json({ error: 'Failed to save report. ' + err.message });
       }
 
       const newReport = {
