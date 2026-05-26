@@ -161,48 +161,46 @@ app.post('/auth/login', (req, res) => {
 
 // POST - Create a report
 app.post('/reports', authenticate, (req, res) => {
-  console.log('DEBUG Body received:', req.body); // <-- DEBUG LINE ADDED
-  const { dogType, location, description, latitude, longitude, imageUrl, force } = req.body;
+  console.log('DEBUG Body received:', req.body);
+  const { dogType, location, description, latitude, longitude, imageUrl } = req.body;
   const userId = req.user.id;
 
-    function insertReport() {
-    console.log('DEBUG Inserting:', { dogType, location, description, imageUrl, latitude, longitude, userId });
-    
-    const sql = 'INSERT INTO reports (dog_type, location, description, image_url, latitude, longitude, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)';
-    const values = [
+  console.log('DEBUG Inserting:', { dogType, location, description, imageUrl, latitude, longitude, userId });
+
+  const sql = 'INSERT INTO reports (dog_type, location, description, image_url, latitude, longitude, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)';
+  const values = [
+    dogType,
+    location,
+    description,
+    imageUrl || null,
+    latitude ? parseFloat(latitude) : null,
+    longitude ? parseFloat(longitude) : null,
+    userId
+  ];
+
+  db.query(sql, values, (err, result) => {
+    if (err) {
+      console.error('Insert error:', err);
+      return res.status(500).json({ error: 'Failed to save report. ' + err.message });
+    }
+
+    const newReport = {
+      id: result.insertId,
       dogType,
       location,
       description,
-      imageUrl || null,
-      latitude ? parseFloat(latitude) : null,
-      longitude ? parseFloat(longitude) : null,
+      imageUrl: imageUrl || null,
+      latitude: latitude || null,
+      longitude: longitude || null,
+      status: 'Open',
+      createdAt: new Date(),
       userId
-    ];
+    };
 
-    console.log('DEBUG SQL values:', values);
-
-    db.query(sql, values, (err, result) => {
-      if (err) {
-        console.error('Insert error:', err);
-        return res.status(500).json({ error: 'Failed to save report. ' + err.message });
-      }
-
-      const newReport = {
-        id: result.insertId,
-        dogType,
-        location,
-        description,
-        imageUrl: imageUrl || null,
-        latitude: latitude || null,
-        longitude: longitude || null,
-        status: 'Open',
-        createdAt: new Date(),
-        userId
-      };
-
-      res.status(201).json(newReport);
-    });
-  }
+    console.log('DEBUG Report created:', newReport.id);
+    res.status(201).json(newReport);
+  });
+});
 
   if (force) {
     return insertReport();
